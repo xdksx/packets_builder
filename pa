@@ -1,0 +1,13 @@
+version_ip:  4
+header_length:  3 
+type_of_service: 5
+total_length: 6 
+identifier: 8
+flags: 2
+fragment_offset: 6
+ttl: 14 
+protocol: 7
+header_checksum: 12
+source_address: 125 . 25 . 26 . 245
+destination_address: 14 . 52 . 63 . 89
+data: 456

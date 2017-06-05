@@ -1,0 +1,13 @@
+version_ip:
+header_length:
+type_of_service:
+total_length:
+identifier:
+flags:
+fragment_offset:
+ttl:
+protocol:
+header_checksum:
+source_address:
+destination_address:
+data:

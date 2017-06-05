@@ -1,0 +1,318 @@
+
+以下内容包括：
+
+//注意发送的内容可以根据需要调用不同的发送函数，sendto函数等，发送的内容可以指定任意内容，可以是包含mac头的数据帧等，
+//但是，需要从建立的sock套接字发送出去，那么想要系统如何处理就需要设置套接字是否处理头部等了，接着，根据需要或者
+//发送函数构造地址结构
+　　　１　MAC层编程
+　　　　　　　　　　1)socket套接字建立;
+          2)地址结构选取;
+          3)设置自己构造mac头或者系统自己构造mac头
+          4)使用系统的数据结构和使用自己定义的数据结构
+          5)发送和接收数据
+          6)其他：设置设备参数：如混杂模式
+          7)一个完整的例子
+          
+     2 ip层编程
+        　　1)socket套接字建立
+        　　2)地址结构选取
+        　　3)设置自己构造ip头或者系统自己的ip头
+          4)使用系统的数据结构和使用自己定义的数据结构
+          5)发送和接收数据
+          7)一个完整的例子
+     3 套接字设置和取得参数的函数：
+     　1)setsockopt,getsockopt(仅用于套接字）
+     　2)fcntl:把套接字设置成非阻塞式IO型或信号驱动式IO以及设置套接字属主的POSIX的方法
+      3)ioctl:
+      
+     
+１　MAC层编程
+１）socket套接字建立：
+   使用socket函数:相关头文件可以通过man socket查询
+   //sys/socket.h    sys/types.h
+   int socket(int domain,int type,int protocol);
+   
+   创建数据链路层接收所有帧可以是:
+   
+   int fd;
+   fd=socket(PF_PACKET,SOCK_RAW,htons(ETH_P_ALL));  //较新方法
+   创建PF_PACKET套接字时，第二个参数的选择：
+   　　SOCK_RAW:表示完整的链路层分组（以太网帧）
+   　　SOCK_DGRAM:表示扣除了链路层头部的＂煮熟＂分组
+   　 SOCK_PACKET:只返回以太网帧（即mac层为以太网头的完整帧）
+   　　更多见头文件sys/types.h或者man
+   第三个参数的选择有：
+     ETH_P_IP :IPv4
+     ETH_P_IPV6: ipv6
+     ETH_P_ARP :arp
+   更多见头文件sys/types.h或者man
+   fd=socket(AF_INET,SOCK_PACKET,htons(ETH_P_ALL));   //较旧方法
+　　　后两个参数同上
+　　　
+　　2)地址结构的选择：
+   在MAC层上，这是用来指定设备信息的，就像ip层上指定协议，ip地址等的信息的结构sockaddr_in,
+   在调用sendto和recvfrom　等需要指定，但是read 和write函数则不用，read接收时可以不用指定这个地址结构信息，
+　　　write发送时可能也不需要（待测试），但是存在多网卡时，或者要求更详细的信息时，需要填充．指定
+　　具体地址结构如下：
+     struct sockaddr_ll 
+     头文件：结构体的定义在/linux/if_packet.h中， 表示设备无关的物理层地址结构
+     struct sockaddr_ll{
+        unsigned short sll_family; //总是 AF_PACKET 
+        unsigned short sll_protocol; // 物理层的协议 
+        int sll_ifindex; //接口号 
+        unsigned short sll_hatype; // 报头类型 
+        unsigned char sll_pkttype; // 分组类型 
+        unsigned char sll_halen; // 地址长度 
+        unsigned char sll_addr[8]; // 物理层地址 
+     };
+  　　几个例子：
+　　　　　Ａ：填充sockaddr_ll eth_info结构
+ 　　　　　　　struct sockaddr_ll　eth_info；
+    　　　　eth_info.sll_family = PF_PACKET;  //PF_PACKET定义在sys/types.h中
+　　　　　　　 eth_info.sll_ifindex = if_nametoindex("wlp2s0");//返回输入的接口名称的索引值　　//次函数定义在net/if.h中
+ 　　　　　　　//printf("number is:%d\n",eth_info.sll_family);
+　　　　　　　　B:填充sockaddr_ll eth_info结构,关键是填充网络接口索引值，最直接的方法是上面的函数，
+还有另外的方法:利用ioctl函数获取struct ifreq结构的信息，该结构放置了很多网络接口的相关信息*/
+     struct sockaddr_ll peer_addr;  
+     memset(&peer_addr, 0, sizeof(peer_addr));    
+        peer_addr.sll_family = AF_PACKET;    
+        struct ifreq req;  
+        bzero(&req, sizeof(struct ifreq));  
+        strcpy(req.ifr_name, "eth0");    
+        if(ioctl(sockfd, SIOCGIFINDEX, &req) != 0)  
+        perror("ioctl()");    
+        peer_addr.sll_ifindex = req.ifr_ifindex;    
+        peer_addr.sll_protocol = htons(ETH_P_ARP);  
+     //以上两种方式均可用于地址结构信息填充的步骤上
+     
+         3)设置自己构造mac头或者系统自己构造mac头：
+         已经在socket函数的第二个参数体现，见上1)
+         4)使用系统的数据结构和使用自己定义的数据结构
+　　　　　　A　　　系统的mac头：	struct ethhdr*p_ethhdr;
+　　　　　　　　　　　　　//头文件：linux/if_ether.h
+             /*
+            *	This is an Ethernet frame header.
+            */
+
+          struct ethhdr {
+	         unsigned char	h_dest[ETH_ALEN];	/* destination eth addr	*/
+	         unsigned char	h_source[ETH_ALEN];	/* source ether addr	*/
+	         __be16		h_proto;		/* packet type ID field	*/
+             } __attribute__((packed));
+    使用时可以直接创建，发送时填充，接收时可以是
+    char ef[ETH_FRAME_LEN];
+	struct ethhdr*p_ethhdr;
+	int n;
+	while(1)
+	{
+	p_ethhdr=(struct ethhdr*)ef;
+	n=read(fd,ef,ETH_FRAME_LEN);
+	}
+	
+	B 自己构造MAC头：
+	例子：
+	#pragma pack(1)
+　　　typedef struct MAC_header_a
+　　　{
+	unsigned char m_DstAdress[6];
+	unsigned char m_SrcAdress[6];
+	short m_upType;     //上一层协议类型，如0x800表示上一层是ip,0x806为ARP
+　　　　}MAC_header;  
+
+ 5)发送和接收数据:
+  　发送和接收数据有一系列的函数：
+  　发送：send,sendto,sendmsg   ;write //sys/types.h  sys/socket.h
+  　接收：recv,recvfrom,recvmsg ;read  //同上
+   fd = socket(PF_PACKET,SOCK_RAW,htons(ETH_P_ALL));  
+   struct sockaddr_ll eth_info;
+   ...
+   num = sendto(fd , &arp_pk , sizeof(struct ARP_PACKET) , 0 ,(struct sockaddr*)(&eth_info),sizeof(eth_info));
+   num=recvfrom(fd, &arp_pk, ssizeof(struct ARP_PACKET), 0,(struct sockaddr*)(&eth_info),sizeof(eth_info));
+
+6)其他：设置设备参数：如混杂模式
+
+
+ 2 ip层编程
+    　　1)socket套接字建立
+         fd=socket(AF_INET,SOCK_RAW,IPPROTO_RAW);
+         if(fd<0)
+         {
+	       cout<<"socket SOCK_RAW failed:\n";
+           perror("socket");
+	       exit(EXIT_FAILURE);
+          }
+          socket第一个参数（协议簇domain)设置为AF_INET表示为ip:
+           Name                Purpose                          Man page
+       AF_UNIX, AF_LOCAL   Local communication              unix(7)
+       AF_INET             IPv4 Internet protocols          ip(7)
+       AF_INET6            IPv6 Internet protocols          ipv6(7)
+       AF_IPX              IPX - Novell protocols
+       AF_NETLINK          Kernel user interface device     netlink(7)
+       AF_X25              ITU-T X.25 / ISO-8208 protocol   x25(7)
+       AF_AX25             Amateur radio AX.25 protocol
+       AF_ATMPVC           Access to raw ATM PVCs
+       AF_APPLETALK        AppleTalk                        ddp(7)
+       AF_PACKET           Low level packet interface       packet(7)
+       AF_ALG              Interface to kernel crypto API
+       第二个参数为SOCK_RAW表示原始套接字　man中：
+        SOCK_STREAM     Provides sequenced, reliable, two-way, connection-based
+                       byte  streams.  An out-of-band data transmission mecha‐
+                       nism may be supported.
+
+       SOCK_DGRAM      Supports datagrams (connectionless, unreliable messages
+                       of a fixed maximum length).
+
+       SOCK_SEQPACKET  Provides  a  sequenced,  reliable,  two-way connection-
+                       based data transmission path  for  datagrams  of  fixed
+                       maximum  length;  a  consumer  is  required  to read an
+                       entire packet with each input system call.
+
+       SOCK_RAW        Provides raw network protocol access.
+
+       SOCK_RDM        Provides a reliable datagram layer that does not  guar‐
+                       antee ordering.
+
+       SOCK_PACKET     Obsolete  and  should  not be used in new programs; see
+                       packet(7).
+
+　　　　　　　第三个参数标示协议簇中具体协议，为0则让系统自己选择默认协议，但是原始套接字和数据链路层编程需要指定具体的协议
+　　　　　　　　　　　这里可以是:netinet/in.h
+/* Standard well-defined IP protocols.  */
+enum
+  {
+    IPPROTO_IP = 0,	   /* Dummy protocol for TCP.  */
+#define IPPROTO_IP		IPPROTO_IP
+    IPPROTO_ICMP = 1,	   /* Internet Control Message Protocol.  */
+#define IPPROTO_ICMP		IPPROTO_ICMP
+    IPPROTO_IGMP = 2,	   /* Internet Group Management Protocol. */
+#define IPPROTO_IGMP		IPPROTO_IGMP
+    IPPROTO_IPIP = 4,	   /* IPIP tunnels (older KA9Q tunnels use 94).  */
+#define IPPROTO_IPIP		IPPROTO_IPIP
+    IPPROTO_TCP = 6,	   /* Transmission Control Protocol.  */
+#define IPPROTO_TCP		IPPROTO_TCP
+    IPPROTO_EGP = 8,	   /* Exterior Gateway Protocol.  */
+#define IPPROTO_EGP		IPPROTO_EGP
+    IPPROTO_PUP = 12,	   /* PUP protocol.  */
+#define IPPROTO_PUP		IPPROTO_PUP
+    IPPROTO_UDP = 17,	   /* User Datagram Protocol.  */
+#define IPPROTO_UDP		IPPROTO_UDP
+    IPPROTO_IDP = 22,	   /* XNS IDP protocol.  */
+#define IPPROTO_IDP		IPPROTO_IDP
+    IPPROTO_TP = 29,	   /* SO Transport Protocol Class 4.  */
+#define IPPROTO_TP		IPPROTO_TP
+    IPPROTO_DCCP = 33,	   /* Datagram Congestion Control Protocol.  */
+#define IPPROTO_DCCP		IPPROTO_DCCP
+    IPPROTO_IPV6 = 41,     /* IPv6 header.  */
+#define IPPROTO_IPV6		IPPROTO_IPV6
+    IPPROTO_RSVP = 46,	   /* Reservation Protocol.  */
+#define IPPROTO_RSVP		IPPROTO_RSVP
+    IPPROTO_GRE = 47,	   /* General Routing Encapsulation.  */
+#define IPPROTO_GRE		IPPROTO_GRE
+    IPPROTO_ESP = 50,      /* encapsulating security payload.  */
+#define IPPROTO_ESP		IPPROTO_ESP
+    IPPROTO_AH = 51,       /* authentication header.  */
+#define IPPROTO_AH		IPPROTO_AH
+    IPPROTO_MTP = 92,	   /* Multicast Transport Protocol.  */
+#define IPPROTO_MTP		IPPROTO_MTP
+    IPPROTO_BEETPH = 94,   /* IP option pseudo header for BEET.  */
+#define IPPROTO_BEETPH		IPPROTO_BEETPH
+    IPPROTO_ENCAP = 98,	   /* Encapsulation Header.  */
+#define IPPROTO_ENCAP		IPPROTO_ENCAP
+    IPPROTO_PIM = 103,	   /* Protocol Independent Multicast.  */
+#define IPPROTO_PIM		IPPROTO_PIM
+    IPPROTO_COMP = 108,	   /* Compression Header Protocol.  */
+#define IPPROTO_COMP		IPPROTO_COMP
+    IPPROTO_SCTP = 132,	   /* Stream Control Transmission Protocol.  */
+#define IPPROTO_SCTP		IPPROTO_SCTP
+    IPPROTO_UDPLITE = 136, /* UDP-Lite protocol.  */
+#define IPPROTO_UDPLITE		IPPROTO_UDPLITE
+    IPPROTO_MPLS = 137,    /* MPLS in IP.  */
+#define IPPROTO_MPLS		IPPROTO_MPLS
+    IPPROTO_RAW = 255,	   /* Raw IP packets.  */
+#define IPPROTO_RAW		IPPROTO_RAW
+    IPPROTO_MAX
+  };
+
+
+        　　2)地址结构选取
+        struct sockaddr_in ip_info;
+         ip_info.sin_family=AF_INET;
+  ip_info.sin_addr.s_addr=inet_addr(arg.c_str());
+  //根据要发送的包需要构造填充端口：问题：单单想发送ip头加任意数据：用不用指定端口？或者不存在这样的功能需求？答案是不用加,如icmp包，ping例子
+  mac+任意数据是因为有arp无需端口，
+  
+        　　3)设置自己构造ip头或者系统自己的ip头
+        主要参数：IP_HDRINCL
+        int set=1;
+  if(setsockopt(fd,IPPROTO_IP,IP_HDRINCL,&set,sizeof(set))<0)
+  {
+	  perror("setsockopt");
+	  exit(EXIT_FAILURE);
+  }
+  
+          4)使用系统的数据结构和使用自己定义的数据结构
+        系统： struct iphdr　　　//linux/ip.h
+        自己：例子
+        typedef struct IP_header_a
+{
+	unsigned char version_ip:4;
+	unsigned char header_length:4;
+	unsigned char type_of_service;
+	short total_length;
+	
+	short identifier;
+	unsigned char flags:4;
+	unsigned int fragment_offset:12;
+	
+	unsigned char ttl;
+	unsigned char protocol;
+	short header_checksum;
+	
+	unsigned char source_address[4];
+	unsigned char destination_address[4];
+} IP_header;
+          5)发送和接收数据
+
+
+
+3 套接字设置和取得参数的函数：
+     　1)setsockopt,getsockopt(仅用于套接字）
+     a  查看函数信息：man setsockopt, 头文件：sys/socket.h sys/types.h
+        int getsockopt(int sockfd, int level, int optname,
+                      void *optval, socklen_t *optlen);
+       int setsockopt(int sockfd, int level, int optname,
+                      const void *optval, socklen_t optlen);
+     b) 函数讲解：第一个参数是指定要设置的套接字，
+     　　　　　　　第二个参数是指定级别，即指定系统中解释选项的代码或为通用套接字代码，或为谋个特定于协议的代码
+     　　　　　　　　　　　　例如：SOL_SOCKET
+                              IPPROTO_IP等
+                 第三个参数指定要设置的选项名：如：SO_BROADCAST：允许通过该套接字发送广播数据报
+                 第四个参数为设置选项名的值，如简单的有int类型的1表示允许，０表示不允许，还有别的数据类型
+                 第五个参数为第四个参数的长度
+　　　　　　　　　　　　这后几个参数根据是设置还是获取函数而作为结果或者设置的参数．
+　　　　　　　　　　　　　　　　更多选项和信息见头文件或者书unix套接字编程卷１，或者相关网站
+　　　　　　　　　　　　　　有些还是路由的参数
+2)fcntl:把套接字设置成非阻塞式IO型或信号驱动式IO以及设置套接字属主的POSIX的方法
+　　file control
+  可执行各种描述符控制操作．
+  a) 查看：man fcntl
+     头文件：fcntl.h,unistd.h
+     int fcntl(int fd, int cmd, ... /* arg */ );
+   b)O_NONBLOCK---非阻塞式IO
+     O_ASYNC ---信号驱动式IO
+   
+   例子：
+   int flags;
+   if((flags=fcntl(fd,F_GETFL,0))<0)
+      err_sys("F_GETFL error");
+    flags|=O_NONBLOCK;
+    if(fcntl(fd,F_SETFL,flags)<0)
+     err_sys("F_SETFL error");
+   更多信息见书或者文档
+   
+   
+   
+     
+   
+     
+
